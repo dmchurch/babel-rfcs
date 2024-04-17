@@ -13,7 +13,9 @@ Request for position on (and implementation of) draft TC39 proposal for standard
 # Changes
 
 - 2024/04/17: Added sections on [Runtime PA](#runtime-pa--no-exhaustiveness-requirement), [Validator
-  transformations](#validator-transformations), and [Future-proofing ECMAScript](#future-proofing-ecmascript)
+  transformations](#validator-transformations), and [Future-proofing ECMAScript](#future-proofing-ecmascript).
+  Slightly altered the semantics of the `syntax` directive and updated the example in [Composition of
+  Transformation Paths](#composition-of-transformation-paths).
 
 # Motivation
 
@@ -43,7 +45,7 @@ considered extremely tentative.
 Parser Augmentation (hereafter PA) is, at its core, a mechanism to _describe_ transformations that can be applied to
 source material to render it into a valid ECMAScript syntax tree. While the PA framework can be used to define
 novel transformations in the style of a classic C preprocessor, its primary purpose is to provide a method for
-(a) an ECMAScript engine or transpiler to report its builtin transformation capabilities to ECMAScript code, and for
+(a) an ECMAScript engine or transpiler to report its builtin syntactic capabilities to ECMAScript code, and for
 (b) ECMAScript code to inform the engine or transpiler what transformations need to be applied to any given source.
 
 This represents an unprecedented level of user control over the ECMAScript import machinery, exceeded only by the
@@ -341,7 +343,7 @@ since ES2022 was the addition of the hashbang grammar, which we can represent as
 
 ```js
 async function downlevelES2023(parser) {
-  parser.emit(Parser.syntheticAST`syntax push "ES2022"`);
+  parser.emit(Parser.syntheticAST`syntax "ES2022"`);
   if (await parser.peekBytes("#!")) {
     parser.setTokenizerMode(Parser.TOKENIZER_COMMENT);
     const commentToken = await parser.parseToken({until: "\n"});
@@ -354,7 +356,7 @@ Parser.registerImplementation("ES2023", downlevelES2023, {polyfill: true});
 Now, when this engine encounters a file that is imported specifying the "ES2023" transformation (See [Specifying
 Transformations](#specifying-transformations) below), it will execute the `downlevelES2023` function.
 
-The first thing this function does is to emit a `syntax push "ES2022"` directive into the syntactic stream, which
+The first thing this function does is to emit a `syntax "ES2022"` directive into the syntactic stream, which
 will cause the parser to execute its ES2022 transform. Since it supports ES2022 natively, that transform is a
 no-op function. Then it peeks the bytestream to see if it starts with `#!` (a non-syntactic request, making this
 a non-syntactic transform - we're not defining `#!` as an operator, we're just looking for it in this one point
@@ -431,11 +433,12 @@ square-bracket alternate transformation syntax, for example, because the parser 
 would block ASI.)
 
 The `syntax push` form of the directive allows for temporary modification of the parse mode. A subsequent
-`syntax pop` restores it. The "comment" transformer has explicit support for this syntax; it treats all following
-source text as a multiline comment up until it encounters the 11-byte sequence `"\nsyntax pop"`. It then parses
-and emits the `syntax pop` directive using the default ECMAScript parser, which will return the parser to
-the state it was in prior to the switch to "comment" mode. Combined with transformer alternative syntax, it allows
-conditional inclusion of source text depending on engine capabilities:
+`syntax pop` disables that `syntax push` directive, as well as all bare `syntax` directives that have occured since.
+The "comment" transformer has explicit support for this syntax; it treats all following source text as a multiline
+comment up until it encounters the 11-byte sequence `"\nsyntax pop"`. It then parses and emits the `syntax pop`
+directive using the default ECMAScript parser, which will return the parser to the state it was in prior to the
+switch to "comment" mode. Combined with transformer alternative syntax, it allows conditional inclusion of
+source text depending on engine capabilities:
 
 ```ts
 // Standard ECMAScript code
@@ -493,11 +496,10 @@ following algorithm:
 1. Start with an empty **working transformation path**.
 2. Order the specified transformation paths as follows:
    1. Out-of-band, specified for this file in particular (for example, an HTTP header).
-      If the path has both syntactic and non-syntactic elements, use only the non-syntactic leading subpath.
    2. Out-of-band, specified generally (for example, a file-extension rule)
    3. Import attribute
-   4. The most recent active `syntax` directive in the source
-   5. Every `syntax push` following that directive which has not been deactivated by a `syntax pop`
+   4. Every `syntax` or `syntax push` directive in the source that has not been deactivated by a `syntax pop`,
+      in source order
 3. For each **specified path**:
    1. For each transformation in the specified path that also occurs in the working path,
       overwrite the working path properties object with the specified properties as though `Object.assign` were
@@ -506,7 +508,7 @@ following algorithm:
       working path.
 
 For example, consider the following scenario: An ECMAScript module imports the file "./foo.ts", specifying the
-transformation `"typescript"` in an import attribute. The engine has native support for ".ts"
+transformation path `"typescript", "pipeline"` in an import attribute. The engine has native support for ".ts"
 files, described as a single-element `"typescript"` transformation path. The foo.ts file is fetched from a server
 that specifies it is to be transformed via the `"gzip"` transformation. The file begins with a directive of
 `syntax "pipeline" with {pipeStyle: "F#"};`, and later in the file, the parser encounters the following directive:
@@ -527,9 +529,9 @@ The engine could determine the appropriate transformation path to use after this
       1. `"typescript"` does not appear in the working path.
       2. Append `"typescript"` to the path.
       3. New working path: `"gzip", "typescript"`
-   3. `"typescript"` (import attribute)
+   3. `"typescript", "pipeline"` (import attribute)
       1. `"typescript"` occurs in the working path and has no properties, it is ignored.
-      2. Working path still: `"gzip", "pipeline", "typescript"`
+      2. New working path: `"gzip", "typescript", "pipeline"`
    4. `"pipeline" with {pipeStyle: "F#"}` (non-push syntax directive)
       1. The `"pipeline"` transformation appears in the working path, so the `pipeStyle` attribute is assigned
          to the working path properties object (the same one that was passed to the TD function, if it was
