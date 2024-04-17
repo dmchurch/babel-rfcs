@@ -292,7 +292,7 @@ Parser.registerImplementation("python", parsePython, {polyfill: true});
 to register that TD with the system if there's no definition for "python", and then use some yet-to-be-determined
 method to register it as a handler for ".py" files imported by this file. Then you've achieved full parity
 with the newer version. The TD could even be used with another engine entirely, as long as there's some way to
-implement the `PythonVM` API - like, say, a third-party extension.
+implement the `PythonVM` API - like, say, a third-party extension, or an [NPM package][python-wasm].
 
 ### Validator Transformations
 
@@ -869,6 +869,7 @@ are not in quotation marks.
 [parser-augmentation-discourse]: https://es.discourse.group/t/proposal-parser-augmentation-mechanism/2008
 [pipeline]: https://github.com/tc39/proposal-pipeline-operator
 [prolog-op3]: https://www.swi-prolog.org/pldoc/doc_for?object=op/3
+[python-wasm]: https://www.npmjs.com/package/python-wasm
 [rfc-binary-ast]: https://github.com/tc39/proposal-binary-ast/issues/81
 [rfc-json-modules]: https://github.com/tc39/proposal-json-modules/issues/31
 [rfc-pipe-operator]: https://github.com/tc39/proposal-pipeline-operator/issues/303
