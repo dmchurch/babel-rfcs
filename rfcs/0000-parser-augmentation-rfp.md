@@ -10,6 +10,11 @@
 
 Request for position on (and implementation of) draft TC39 proposal for standardized parser transformations.
 
+# Changes
+
+- 2024/04/17: Added sections on [Runtime PA](#runtime-pa--no-exhaustiveness-requirement), [Validator
+  transformations](#validator-transformations), and [Future-proofing ECMAScript](#future-proofing-ecmascript)
+
 # Motivation
 
 ECMAScript does not currently have any way to describe the syntax transformations required to turn source code
@@ -233,10 +238,132 @@ TC39 could additionally define modes that act as baseline transformers but remov
 forms from the language. This would allow it to reclaim syntax space in the language, at the cost of gating some
 newer syntaxes behind the equivalent of a Python `from __future__` statement.
 
+### Runtime PA / No Exhaustiveness Requirement
+
+Transformation Descriptions, especially those used by runtime PA implementations, are _symbolic_. They are designed
+to be as simple as possible, using as simple syntax as possible, so that they can be verified at the source level
+as well as in terms of their output. This necessarily means that they are context-dependent; as they are describing
+behavior that the parser can take, they can use APIs that are specific to operating in the parser context.
+
+For example, a hypothetical open-source project might release an engine that can execute both ECMAScript code and
+Python code; it contains both kernels and uses an IPC mechanism to pass values and execution between the domains.
+The integration is as smooth as it could possibly be: you simply `import` a `.py` file as though it were a `.js`
+file, and you can access it just like it were a native ES Module. All this is possible today, and has probably
+already been done, many times.
+
+So where does Parser Augmentation fit into this picture? PA gives us a way to describe what is happening, so that
+the interface between the "syntax you're importing" (remember, the meaning of `import` is "parse this ECMAScript
+file and load it as a module") and the rest of the ECMAScript environment is well-defined.
+
+Let's create a Transformation Description for this hypothetical engine. It exposes all its Python plumbing APIs
+through a non-standard top-level symbol, `PythonVM`. You can access a property on `PythonVM` according to the
+version of Python you care about if you want, or you can just use `PythonVM` itself to use the default version;
+in either case, there are only two methods we care about:
+
+- `PythonVM.compileScript(text)` is an async method which tells the Python runtime to compile a given Python
+  source text. It returns a promise that resolves to an object with a `bytecode` property containing the bytecode
+  in an ArrayBuffer and an `exports` property which is an array of strings like the following:
+  ```js
+  "export let foo = PythonVM.topLevelGlobals['foo'];"
+  ```
+- `PythonVM.executeBytecode(bytecode)` does exactly what it says on the tin. It executes the bytecode as a Python
+  script, storing the toplevel variable context in the property `topLevelGlobals`. Synchronous.
+
+We can reproduce the engine's native behavior using these two methods as follows:
+
+```js
+async function parsePython(parser, {version}) {
+  parser.setTokenizerMode(Parser.TOKENIZER_STRING_CONSTANT);
+  const scriptToken = await parser.parseToken();
+  const {bytecode, exports} = await PythonVM[version].compileScript(scriptToken.value);
+  parser.emit(Parser.syntheticAST`PythonVM[${version}].executeBytecode(${bytecode}); ${exports}`);
+}
+```
+
+The `parsePython` function is a _Transformation Description_. It doesn't matter that it can only run on this one
+specific engine, and the implementation is not provided. If you wanted to run your JS/Python program on an older
+version of the engine, one that supported the `PythonVM` API but not the automagic import behavior from ES to
+Python based on file extension, then you could use the code
+
+```js
+Parser.registerImplementation("python", parsePython, {polyfill: true});
+```
+
+to register that TD with the system if there's no definition for "python", and then use some yet-to-be-determined
+method to register it as a handler for ".py" files imported by this file. Then you've achieved full parity
+with the newer version. The TD could even be used with another engine entirely, as long as there's some way to
+implement the `PythonVM` API - like, say, a third-party extension.
+
+### Validator Transformations
+
+A transformation that is registered with the `validate` option set to `true` is a **Validator Transformation**.
+These will always run on any input being transformed by that identifier. It may or may not be selected by the
+host as the implementation to use when parsing, but if it is _not_ used as the actual parse-time implementation,
+the host must execute (an equivalent of) the validator TD as well. If the AST produced by the validator TD
+does not match the AST produced by the original parser (using a definition of "match" to be workshopped later),
+the host must reject the transformation before any results of the resulting AST are observable - most likely,
+by throwing a `SyntaxError`.
+
+Continuing with the JS/Python hybrid engine example, this could be used to ensure that the Python engine
+is running the proper bytecode, to guard against any type of unexpected implementation or environment differences
+in the compiler. A project might decide to port the Python parser and bytecode compiler to ECMAScript, using the
+same API as `PythonVM.compileScript()`, but a different name. Then it can copy the engine's native TD (the
+`parsePython` method above), changing only the `compileScript()` call to use the custom compiler, and it can
+register this new TD as a validator transformation. After that, the parser will only allow importing of Python
+files if both implementations agree on the AST, i.e. if they have the exact same bytecode as each other in the
+argument to `executeBytecode`.
+
 ### Abstract Syntax Tree
 
 The AST format in use will be modeled after Babel's AST. No need to reinvent the wheel on this one; the TC39
 Binary AST proposal [also plans to use the Babel AST][binary-ast-prototype].
+
+### Future-proofing ECMAScript
+
+The polyfill capability can also be used to give engines future-compatibility for new ECMAScript syntax, even if
+development on the engine stalls. Let's imagine a standard convention in which engines will report any syntax they
+have native compatibility for as a null transformer. So, inventing a little bit of API here, we can imagine the
+following:
+
+```js
+console.log(Parser.getAvailableTransformations());
+// Prints an object that looks like:
+{
+  "ES2022": function() {},
+  "ES2021": function() {},
+  "ES2020": function() {},
+  ...
+}
+```
+
+This engine supports up to ES2022 syntax, but not ES2023. The only syntactical change made in the ES2023 specification
+since ES2022 was the addition of the hashbang grammar, which we can represent as the following TD:
+
+```js
+async function downlevelES2023(parser) {
+  parser.emit(Parser.syntheticAST`syntax push "ES2022"`);
+  if (await parser.peekBytes("#!")) {
+    parser.setTokenizerMode(Parser.TOKENIZER_COMMENT);
+    const commentToken = await parser.parseToken({until: "\n"});
+    parser.emit(commentToken);
+  }
+}
+Parser.registerImplementation("ES2023", downlevelES2023, {polyfill: true});
+```
+
+Now, when this engine encounters a file that is imported specifying the "ES2023" transformation (See [Specifying
+Transformations](#specifying-transformations) below), it will execute the `downlevelES2023` function.
+
+The first thing this function does is to emit a `syntax push "ES2022"` directive into the syntactic stream, which
+will cause the parser to execute its ES2022 transform. Since it supports ES2022 natively, that transform is a
+no-op function. Then it peeks the bytestream to see if it starts with `#!` (a non-syntactic request, making this
+a non-syntactic transform - we're not defining `#!` as an operator, we're just looking for it in this one point
+in the bytestream). If it finds it, it will switch its tokenizer to the mode that parses everything as a comment,
+and it consumes one line of input, emitting a comment token into the AST as the first top-level item. This happens
+before the syntactic parser ever gets the first byte of input, which will start at the second line.
+
+The first engine that supports runtime polyfillable PA is the first one that supports _all_ versions of ECMAScript,
+past, present, and future.
 
 ## Specifying Transformations
 
@@ -586,7 +713,7 @@ of the more relevant prior art includes:
 
   PA provides a standard pattern for defining _exactly_ what steps a given transformation comprises. No more
   "I have to keep using Webpack because the syntax I'm using is only implemented by a Webpack plugin". Using a
-  given syntax in a project becomes nothing more difficult than adding a packager-agnostic `devDependency` and
+  given syntax in a project becomes nothing more difficult than adding a transpiler-agnostic `devDependency` and
   including a `syntax` directive at the top of the file.
 - **[TC39 Binary AST Proposal][binary-ast]**  
   This was the inspiration that led to PA's primary format being an AST. Browsers do not _want_ to parse ECMAScript
