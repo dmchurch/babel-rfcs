@@ -16,6 +16,8 @@ Request for position on (and implementation of) draft TC39 proposal for standard
   transformations](#validator-transformations), and [Future-proofing ECMAScript](#future-proofing-ecmascript).
   Slightly altered the semantics of the `syntax` directive and updated the example in [Composition of
   Transformation Paths](#composition-of-transformation-paths).
+- 2024/04/18: Rewrote the example for [Validator transformations](#validator-transformations) to
+  clarify the use case.
 
 # Motivation
 
@@ -35,7 +37,7 @@ incomplete draft of it on the TC39 discourse, which can be seen here:
 
 https://es.discourse.group/t/proposal-parser-augmentation-mechanism/2008
 
-That draft is largely focused on the impact to the TC39 proposal process, so I'll dig a little more deeper into
+That draft is largely focused on the impact to the TC39 proposal process, so I'll dig a little deeper into
 the implementation vision that I have for it, here. Note of course that unless and until TC39 decides to weigh in
 on the proposal or a concrete implementation is realized, the syntax and semantics discussed herein should be
 considered extremely tentative.
@@ -298,22 +300,70 @@ implement the `PythonVM` API - like, say, a third-party extension, or an [NPM pa
 
 ### Validator Transformations
 
-A transformation that is registered with the `validate` option set to `true` is a **Validator Transformation**.
-These will always run on any input being transformed by that identifier. It may or may not be selected by the
-host as the implementation to use when parsing, but if it is _not_ used as the actual parse-time implementation,
-the host must execute (an equivalent of) the validator TD as well. If the AST produced by the validator TD
-does not match the AST produced by the original parser (using a definition of "match" to be workshopped later),
-the host must reject the transformation before any results of the resulting AST are observable - most likely,
-by throwing a `SyntaxError`.
+Imagine now that a second JS engine decides to add Python support to their implementation. This project does it a
+different way, though. Rather than welding an entire Python engine to the JS engine, it instead syntax-translates the
+Python code into equivalent JS code, polyfilling enough Python system functions that standard Python libraries are
+_mostly_ usable - the WINE solution. It works well enough that you can use most of the simpler pure-Python packages out
+there. And, since the Python code translates into native JS and doesn't require any inter-engine IPC, the
+syntax-translated version actually runs faster in most scenarios.
 
-Continuing with the JS/Python hybrid engine example, this could be used to ensure that the Python engine
-is running the proper bytecode, to guard against any type of unexpected implementation or environment differences
-in the compiler. A project might decide to port the Python parser and bytecode compiler to ECMAScript, using the
-same API as `PythonVM.compileScript()`, but a different name. Then it can copy the engine's native TD (the
-`parsePython` method above), changing only the `compileScript()` call to use the custom compiler, and it can
-register this new TD as a validator transformation. After that, the parser will only allow importing of Python
-files if both implementations agree on the AST, i.e. if they have the exact same bytecode as each other in the
-argument to `executeBytecode`.
+However, it's not a good match for your project. Your use of Python is solely for interfacing with the Python bindings
+of a native library that doesn't have a JS binding, and so it won't work if it's syntax-translated. If the engine
+can't run a native-Python version of the `.py` "module", you need to fall back on your pure-JS implementation.
+You can test to make sure the `PythonVM` API is available before you `await import()` the module, of course, but how
+can you be certain that what you import _is_ the `PythonVM` implementation?
+
+Well, we can start out by taking the above TD function and registering it as a validator, in addition to a polyfill:
+
+```js
+Parser.registerImplementation("python", parsePython, {polyfill: true, validate: true});
+```
+
+- A transformation that is registered with the `validate` option set to `true` is a **Validator Transformation**.
+  These will always run on any input being transformed by that identifier. It may or may not be selected by the
+  host as the implementation to use when parsing, but if it is _not_ used as the actual parse-time implementation,
+  the host must execute (an equivalent of) the validator TD as well. If the AST produced by the validator TD
+  does not match the AST produced by the original parser (using a definition of "match" to be workshopped later),
+  the host must reject the transformation before any results of the resulting AST are observable - most likely,
+  by throwing a `SyntaxError`.
+
+Now, you can be sure that if your `await import()` succeeds, it means that this code was exactly the right code,
+produced by the same compiler, running on the same version, exporting the right exports. If your project runs
+on a syntactic-transforming Python⇒JS engine, it will see that the generated AST is not the same as the
+`executeBytecode` AST produced by your validator, and it will fail the `await import()` so that you can fall
+back to the JS implementation.
+
+That's a lot of extra work being done, though. We don't have to compile the entire Python file ourself to know
+that a syntax-translated AST is wrong. And what's more, this validator will run even on the native-Python engine,
+which means that you'll be compiling every Python file twice. So, let's simplify the validator function. All
+you really care about is that some version of Python is executing the file _as bytecode_, i.e. in an actual
+Python engine. Copy the parsing TD and change the initial lines about compilation, and you get this:
+
+```js
+async function parsePython(parser, {version}) {
+  parser.setTokenizerMode(Parser.TOKENIZER_STRING_CONSTANT);
+  const scriptToken = await parser.parseToken();
+  const {bytecode, exports} = await PythonVM[version].compileScript(scriptToken.value);
+  parser.emit(Parser.syntheticAST`PythonVM[${version}].executeBytecode(${bytecode}); ${exports}`);
+}
+function validatePython(parser) {
+  const version = Parser.ANY_STRING;
+  const bytecode = Parser.ANY_ARRAYBUFFER;
+  const exports = Parser.ANY; // ANY is 0 or more nodes, ANY_NODE is exactly 1
+  parser.emit(Parser.syntheticAST`PythonVM[${version}].executeBytecode(${bytecode}); ${exports}`);
+}
+Parser.registerImplementation("python", parsePython, {polyfill: true});
+Parser.registerImplementation("python", validatePython, {validate: true});
+```
+
+The `parsePython` TD function is now registered as a polyfill, to enable functionality on the versions of the hybrid
+engine that don't natively support `.py` import, and the `validatePython` TD function is registered as a validator.
+Since `validatePython` never makes a parse request and simply runs to completion, it is a _passive_ transformation;
+it isn't dependent on the input file, so the PA engine can use it to decide which transformation algorithm to run
+in the first place. If the engine has both a native-Python and a syntax-translated-Python mechanism (perhaps one is the
+fallback for the other), the `validatePython` validator would let it know that it needs to use the native-Python
+implementation. If it _only_ has a syntax-translated version, it would know the translation was wrong as soon
+as it emitted an AST node that wasn't a `PythonVM` call.
 
 ### Abstract Syntax Tree
 
