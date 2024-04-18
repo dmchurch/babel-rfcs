@@ -17,7 +17,8 @@ Request for position on (and implementation of) draft TC39 proposal for standard
   Slightly altered the semantics of the `syntax` directive and updated the example in [Composition of
   Transformation Paths](#composition-of-transformation-paths).
 - 2024/04/18: Rewrote the example for [Validator transformations](#validator-transformations) to
-  clarify the use case.
+  clarify the use case. Edited the pipeline example in [TD Semantics](#td-semantics) to clarify that this
+  proposal does NOT change existing ECMAScript parse or import order.
 
 # Motivation
 
@@ -48,7 +49,8 @@ Parser Augmentation (hereafter PA) is, at its core, a mechanism to _describe_ tr
 source material to render it into a valid ECMAScript syntax tree. While the PA framework can be used to define
 novel transformations in the style of a classic C preprocessor, its primary purpose is to provide a method for
 (a) an ECMAScript engine or transpiler to report its builtin syntactic capabilities to ECMAScript code, and for
-(b) ECMAScript code to inform the engine or transpiler what transformations need to be applied to any given source.
+(b) ECMAScript code to inform the engine or transpiler what transformations must be applied to any given source
+before it can be successfully parsed.
 
 This represents an unprecedented level of user control over the ECMAScript import machinery, exceeded only by the
 proposed [VirtualModuleSource] mechanism described in the Compartments proposal at Stage 1 of the TC39 process.
@@ -65,10 +67,10 @@ proposal could be implemented as a PA transformer with the type "json"; once the
 in the spec, it would not be permissible to refuse transformation of an import with "json" type.
 
 Despite these limitations, it is exceedingly likely that browser vendors will be slow to adopt a polyfillable PA
-mechanism given the attack risk it repesents, not to mention the runtime cost of calling out to user code during
-parsing. However, neither of these drawbacks affect transpilers like Babel. Transpilation is always performed with
-controlled inputs, and PA directives in the transpilation context only serve to enable, disable, or configure the
-transformations that a transpiler is already making.
+mechanism given the attack risk it repesents, not to mention the common impression that implementing PA _requires_
+calling JS code at parse-time. However, neither of these drawbacks affect transpilers like Babel. Transpilation is
+nearly always performed with controlled inputs, and PA directives in the transpilation context only serve to enable,
+disable, or configure the transformations that a transpiler is already making.
 
 ## Transformation Descriptions
 
@@ -100,7 +102,9 @@ is required to execute the TD function in any observable way. An implementation 
 for the transformation (such as Babel's existing JSON module support); it can perform static analysis of the
 TD function to construct an internal parser representation (engines are allowed to reject any non-analyzable
 transformations); or, in fact, it can simply run the TD function at parse-time, passing it a handle to a
-PA-compliant parser object. As long as the resulting AST matches what the TD function _would_ have produced, the
+PA-compliant parser object.
+
+As long as the resulting AST matches what the TD function _would_ have produced, the
 implementation is compliant. If executing the TD function would produce observable side-effects, the PA implementation
 is permitted either to reproduce those side-effects faithfully (for example, by executing the TD function as part
 of parsing), or to inhibit the side-effects completely (for example, by using a different implementation, or by running
@@ -110,7 +114,7 @@ are permitted to reject any transformations that show such discrepancies.
 
 A TD can also be registered to _validate_ a transformation, as it is here. If a validating TD is registered for
 a transformation and that transformation executes with inhibited side-effects, then afterwards, the TD function must
-be called _with_ visible side-effects. This second transformation must produce the same AST as the first, and the
+be called _with_ visible side-effects. This second transformation must produce an AST that matches the first, and the
 PA implementation must reject the Transformation if it does not.
 
 ### TD Syntax
@@ -127,7 +131,7 @@ syntactic, or purely non-syntactic, but there are exceptions. Every transformati
 defined by a Transformation Description, above. A set of several Transformations in sequence form a _Transformation
 Path_, and the PA mechanism includes a number of ways to associate a source text with a Transformation Path; see below.
 Transformations, and likewise Transformation Descriptions, can be categorized by what type of input they expect
-and what type of output they produce. All are represented by the same TD interface, but they various categories
+and what type of output they produce. All are represented by the same TD interface, but the various categories
 have slightly different requirements and semantics.
 
 A **non-syntactic** transformation is one that does not utilize the ECMAScript parsing logic. The `json` function
@@ -190,10 +194,21 @@ function topicReference(parser, expr, context) {
     parser.emit(context.state.topicVariable);
 }
 Parser.registerImplementation("pipeline", pipeline);
+```
 
+If the PA implementation accepts registration of this TD, then the application could then expect to be able
+to parse and execute a file containing the following:
+
+```js
 syntax "pipeline"; // a syntax directive takes effect after the newline following the statement, so just after here →
 console.log("foo" |> one(%) |> two(%) |> three(%));
 ```
+
+(This could not appear in the _same_ file, which has already been fully parsed, except as part of an `eval` or
+`new Function` or other such dynamic code generation, but it could appear in a file parsed after the point when
+the `registerImplementation` call executes successfully. This proposal makes no changes to ECMA262 parse or
+import timing with the exception of the optional `syntax import ... from ...` form of the `syntax` directive,
+described in [Specifying Transformations > Inline](#inline))
 
 When a TD is called as part of parsing, it is called once the input stream is open (but, potentially, before any data
 is available to it). As a _logical_ description, it operates on a node-and-tree view of the source text, but the API
