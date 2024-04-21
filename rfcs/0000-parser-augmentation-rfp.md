@@ -20,6 +20,10 @@ Request for position on (and implementation of) draft TC39 proposal for standard
   clarify the use case. Edited the pipeline example in [TD Semantics](#td-semantics) to clarify that this
   proposal does NOT change existing ECMAScript parse or import order.
   Added an example static analysis method to the [FAQ](#frequently-asked-questions) section.
+- 2024/04/20: Revised the alternative syntax grammar in [Specifying Tranformations / Inline](#inline), adding a `from`
+  keyword before the opening bracket of the array-like syntax, to avoid collision with member access syntax when
+  `syntax` is used as a variable name. It is now possible to determine if a given instance of `syntax` is a directive
+  or a primary expression by looking at the next scanner token.
 
 # Motivation
 
@@ -477,15 +481,21 @@ take one of the following forms:
    This can also take a `with`, immediately prior to the `from`; Advisory NLTH before both keywords, and one before
    a `with` in the `<module-specifier>` (this is a difference from the usual Import Attributes syntax as described
    in [this issue][import-attributes-nlth]; in this case it's not ASI hazard but parse hazard)
-4. `[<transformation>, <transformation>]` - including multiple transformations in an array-like syntax indicates
+4. `from [<transformation>, <transformation>]` - including multiple transformations in an array-like syntax indicates
    that any of the listed transformations can be applied; the first one that succeeds will be used. This allows for
    dynamic selection of transformation implementations, depending on engine support. Note that this is _array-like_
    and not a true array syntax; the "members" of this "array" are transformation specifiers, which can include
-   non-Expression syntax.
+   non-Expression syntax. The `from` keyword before the opening square-bracket is required to disambiguate this
+   from member access syntax, and has a mnemonic meaning of "from amongst the following:".
 5. `null` - the null transformer always succeeds, but it has no effect. It can be used as the final alternative
    in a set of alternate transformations; for example, the directive
    ```js
-   syntax ["typescript", import "typescript" with {version: "4.4"} from "https://www.typescriptlang.org/syntax", null];
+   syntax from [
+     "typescript",
+     import
+       "typescript" with {version: "4.4"}
+     from "https://www.typescriptlang.org/syntax",
+     null];
    ```
    is a request to transform this source by the built-in `"typescript"` transformer, if available; by the
    (obviously currently non-existent) official syntax description for TypeScript 4.4, if unavailable and the
@@ -509,7 +519,7 @@ source text depending on engine capabilities:
 ```ts
 // Standard ECMAScript code
 
-syntax push ["typescript", "comment"];
+syntax push from ["typescript", "comment"];
 // this will either be parsed as TypeScript or ignored
 interface InterfaceDeclaration {
     foo: string;
